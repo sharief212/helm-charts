@@ -1,0 +1,39 @@
+{{- if and  .Values.oesAutoConfiguration .Release.IsInstall -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  annotations:
+    "helm.sh/hook": "post-install,post-upgrade"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+    "helm.sh/hook-weight": "5"
+  labels:
+    app: oes
+    component: oes-config
+{{ include "oes.standard-labels" . | indent 4 }}
+  name: oes-config
+spec:
+  template:
+    metadata:
+      labels:
+        app: oes
+        component: oes-config
+{{ include "oes.standard-labels" . | indent 8 }}
+    spec:
+      containers:
+      - command: ["bash", "/tmp/config/datasource-api.sh" ]
+        name: datasource-creation-api
+        image: {{ .Values.global.customImages.registry }}/oes-pre-configure:v2
+        volumeMounts:
+        - mountPath: /tmp/config
+          name: datasource-creation
+      {{- if .Values.imagePullSecret}}
+      imagePullSecrets:
+      - name: {{ .Values.imagePullSecret}}
+      {{- end }}
+      restartPolicy: OnFailure
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: {{ template "oes.fullname" . }}-datasource-creation
+        name: datasource-creation
+{{- end -}}

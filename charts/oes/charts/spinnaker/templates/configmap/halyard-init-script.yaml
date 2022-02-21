@@ -1,0 +1,141 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "spinnaker.fullname" . }}-halyard-init-script
+  labels:
+{{ include "spinnaker.standard-labels" . | indent 4 }}
+data:
+  init.sh: |
+    {{- if not .Values.gitopsHalyard.enabled }}
+    #!/bin/bash
+    set -x
+    # Override Halyard daemon's listen address
+    cp /opt/halyard/config/* /tmp/config
+    printf 'server.address: 0.0.0.0\n' > /tmp/config/halyard-local.yml
+
+    # Use Redis deployed via the dependent Helm chart
+    rm -rf /tmp/spinnaker/.hal/default/service-settings
+    mkdir -p /tmp/spinnaker/.hal/default/service-settings
+    cp /tmp/service-settings/* /tmp/spinnaker/.hal/default/service-settings/
+
+    rm -rf /tmp/spinnaker/.hal/default/profiles
+    mkdir -p /tmp/spinnaker/.hal/default/profiles
+    cp /tmp/additionalProfileConfigMaps/* /tmp/spinnaker/.hal/default/profiles/
+
+    rm -rf /tmp/spinnaker/.hal/.boms
+
+    {{- if .Values.halyard.bom }}
+    mkdir -p /tmp/spinnaker/.hal/.boms/bom
+    cp /tmp/halyard-bom/* /tmp/spinnaker/.hal/.boms/bom
+    {{- end }}
+
+    {{- if .Values.halyard.serviceConfigs }}
+    for filename in /tmp/service-configs/*; do
+      basename=$(basename -- "$filename")
+      fname="${basename#*_}"
+      servicename="${basename%%_*}"
+
+      mkdir -p "/tmp/spinnaker/.hal/.boms/$servicename"
+      cp "$filename" "/tmp/spinnaker/.hal/.boms/$servicename/$fname"
+    done
+    {{- end }}
+
+    {{- if hasKey .Values.halyard "additionalInitScript" }}
+    # additionalInitScript
+    {{ tpl .Values.halyard.additionalInitScript $ | indent 4 }}
+    {{- end }}
+    {{- end }}
+
+    {{- if .Values.gitopsHalyard.enabled }}
+    {{- if or (eq .Values.gitopsHalyard.repo.type "git") (eq .Values.gitopsHalyard.repo.type "stash") }}
+    #!/bin/bash -x
+    rm -rf /tmp/spinnaker/.hal
+    git -c {{ .Values.gitopsHalyard.repo.configArgs }} clone $GIT_CLONE_PARAM -b {{ .Values.gitopsHalyard.repo.halConfigBranch}} /tmp/spinnaker/test
+    cp -pr /tmp/spinnaker/test/{{ .Values.gitopsHalyard.repo.halConfigPath }} /tmp/spinnaker/.hal
+    if [ -d "/tmp/spinnaker/test/pipeline-promotion/" ]
+    then
+       cp -pr /tmp/spinnaker/test/pipeline-promotion /tmp/spinnaker/pipeline-promotion
+    fi
+    rm -rf /tmp/spinnaker/test
+    GIT_USER=`echo $GIT_USER | sed 's/ *$//g'`
+    GIT_TOKEN=`echo $GIT_TOKEN | sed 's/ *$//g'`
+    DYNAMIC_ACCOUNTS_REPO=`echo $DYNAMIC_ACCOUNTS_REPO | sed 's/ *$//g'`
+    sed -i  s/SPINNAKER_NAMESPACE/${SPINNAKER_NAMESPACE}/ /tmp/spinnaker/.hal/config
+    sed -i  s/RELEASE_NAME/{{ .Release.Name }}/g /tmp/spinnaker/.hal/config
+    {{- if .Values.gitopsHalyard.environment }}
+    sed -i  s/ENVIRONMENT/{{ .Values.gitopsHalyard.environment }}/g /tmp/spinnaker/.hal/config
+    {{- end }}
+    sed -i  s/GIT_USER/${GIT_USER}/g /tmp/spinnaker/.hal/default/profiles/spinnakerconfig.yml
+    sed -i  s/GIT_TOKEN/${GIT_TOKEN}/g /tmp/spinnaker/.hal/default/profiles/spinnakerconfig.yml
+    sed -i  's|DYNAMIC_ACCOUNTS_REPO|'"${DYNAMIC_ACCOUNTS_REPO}"'|' /tmp/spinnaker/.hal/default/profiles/spinnakerconfig.yml
+    sed -i  s%DYN_ACCNT_CONFG_PATH%{{ .Values.gitopsHalyard.repo.dynAccntConfigPath }}%g /tmp/spinnaker/.hal/default/profiles/spinnakerconfig.yml
+    sed -i  s/RELEASE_NAME/{{ .Release.Name }}/g /tmp/spinnaker/.hal/default/service-settings/redis.yml
+    if [ -f /tmp/spinnaker/.hal/default/profiles/fiat-local.yml ]; then
+    sed -i  s/RELEASE_NAME/{{ .Release.Name }}/g /tmp/spinnaker/.hal/default/profiles/fiat-local.yml
+    fi
+    sed -i  s/SPINNAKER_NAMESPACE/${SPINNAKER_NAMESPACE}/ /tmp/spinnaker/.hal/default/profiles/orca-local.yml
+    printf 'server.address: 0.0.0.0\n' > /tmp/config/halyard-local.yml
+    if [ -f /tmp/spinnaker/.hal/halyard.yaml ]; then
+    cp /tmp/spinnaker/.hal/halyard.yaml /tmp/config
+    fi
+    {{- end }}  # git or stash
+    {{- end }}  # Enabled
+
+    {{- if and (.Values.gitopsHalyard.enabled) (eq .Values.gitopsHalyard.repo.type "s3") }}
+    #!/bin/bash -x
+    rm -rf /tmp/spinnaker/.hal
+    AWS_ACCESS_KEY_ID=$S3_ACCESSKEY AWS_SECRET_ACCESS_KEY=$S3_SECRETKEY aws s3 cp s3://$S3_BUCKET/config /tmp/spinnaker/.hal/config
+    AWS_ACCESS_KEY_ID=$S3_ACCESSKEY AWS_SECRET_ACCESS_KEY=$S3_SECRETKEY aws s3 cp s3://$S3_BUCKET/default/ /tmp/spinnaker/.hal/default --recursive
+    AWS_ACCESS_KEY_ID=$S3_ACCESSKEY AWS_SECRET_ACCESS_KEY=$S3_SECRETKEY aws s3 cp s3://$S3_BUCKET/halyard.yaml /tmp/spinnaker/.hal/halyard.yaml
+    sed -i  s/SPINNAKER_NAMESPACE/${SPINNAKER_NAMESPACE}/ /tmp/spinnaker/.hal/config
+    sed -i  s/RELEASE_NAME/{{ .Release.Name }}/g /tmp/spinnaker/.hal/config
+    sed -i  s/RELEASE_NAME/{{ .Release.Name }}/g /tmp/spinnaker/.hal/default/service-settings/redis.yml
+    if [ -f /tmp/spinnaker/.hal/default/profiles/fiat-local.yml ]; then
+    sed -i  s/RELEASE_NAME/{{ .Release.Name }}/g /tmp/spinnaker/.hal/default/profiles/fiat-local.yml
+    fi
+    sed -i  s/SPINNAKER_NAMESPACE/${SPINNAKER_NAMESPACE}/ /tmp/spinnaker/.hal/default/profiles/orca-local.yml
+    # Copy S3 Specific files
+    cp /tmp/spinnaker/.hal/default/service-settings/clouddriver-caching.yml.s3 /tmp/spinnaker/.hal/default/service-settings/clouddriver-caching.yml
+    cp /tmp/spinnaker/.hal/default/service-settings/clouddriver-ro.yml.s3 /tmp/spinnaker/.hal/default/service-settings/clouddriver-ro.yml
+    cp /tmp/spinnaker/.hal/default/service-settings/clouddriver-rw.yml.s3 /tmp/spinnaker/.hal/default/service-settings/clouddriver-rw.yml
+    cp /tmp/spinnaker/.hal/default/service-settings/clouddriver-ro-deck.yml.s3 /tmp/spinnaker/.hal/default/service-settings/clouddriver-ro-deck.yml
+    cp /tmp/spinnaker/.hal/default/profiles/spinnakerconfig.yml.s3 /tmp/spinnaker/.hal/default/profiles/spinnakerconfig.yml
+    # Edit and put secrets in there
+    sed -i  s/AWS_ACCESS_KEY_ID/${S3_ACCESSKEY}/g /tmp/spinnaker/.hal/default/service-settings/clouddriver-caching.yml
+    sed -i  s/AWS_ACCESS_KEY_ID/${S3_ACCESSKEY}/g /tmp/spinnaker/.hal/default/service-settings/clouddriver-ro.yml
+    sed -i  s/AWS_ACCESS_KEY_ID/${S3_ACCESSKEY}/g /tmp/spinnaker/.hal/default/service-settings/clouddriver-ro-deck.yml
+    sed -i  s/AWS_ACCESS_KEY_ID/${S3_ACCESSKEY}/g /tmp/spinnaker/.hal/default/service-settings/clouddriver-rw.yml
+    sed -i  s%AWS_SECRET_ACCESS_KEY%${S3_SECRETKEY}%g /tmp/spinnaker/.hal/default/service-settings/clouddriver-caching.yml
+    sed -i  s%AWS_SECRET_ACCESS_KEY%${S3_SECRETKEY}%g /tmp/spinnaker/.hal/default/service-settings/clouddriver-ro.yml
+    sed -i  s%AWS_SECRET_ACCESS_KEY%${S3_SECRETKEY}%g /tmp/spinnaker/.hal/default/service-settings/clouddriver-ro-deck.yml
+    sed -i  s%AWS_SECRET_ACCESS_KEY%${S3_SECRETKEY}%g /tmp/spinnaker/.hal/default/service-settings/clouddriver-rw.yml
+    sed -i  s/AWS_S3_BUCKET/${S3_BUCKET}/g /tmp/spinnaker/.hal/default/profiles/spinnakerconfig.yml
+    sed -i  s/AWS_S3_REGION/${S3_REGION}/g /tmp/spinnaker/.hal/default/profiles/spinnakerconfig.yml
+
+    printf 'server.address: 0.0.0.0\n' > /tmp/config/halyard-local.yml
+    if [ -f /tmp/spinnaker/.hal/halyard.yaml ]; then
+    cp /tmp/spinnaker/.hal/halyard.yaml /tmp/config
+    fi
+    {{- end }}  # End of S3
+
+    {{- if .Values.gitopsHalyard.mTLS.enabled }}
+    sed -i  s/SPINNAKER_NAMESPACE/${SPINNAKER_NAMESPACE}/g /tmp/spinnaker/.hal/default/service-settings/*
+    {{- end }}
+    # pipeline promotion configuration setup
+    #
+    ls -lart /home/spinnaker/java-lib/
+    if [ -d "/tmp/spinnaker/pipeline-promotion/" ]
+    then
+      #decrypt_key=$(kubectl get cm bootstrap -o yaml  -n ${SPINNAKER_NAMESPACE}| grep 'password:' | awk '{ print $2}')
+      decrypt_key=$(kubectl get secret bootstrap -o jsonpath='{.data.bootstrap\.yml}' -n ${SPINNAKER_NAMESPACE} | base64 -d | grep 'password:' | awk '{ print $2}')
+      if [[ $decrypt_key != "" ]];
+      then
+        for filename in /tmp/spinnaker/pipeline-promotion/*; do
+          java -cp "Decryptor.jar:/home/spinnaker/java-lib/*" Decryptor $decrypt_key "$filename"
+        done
+      mkdir /tmp/spinnaker/pipeline-decrypted/
+      mv /tmp/spinnaker/pipeline-promotion/*decrypted.yaml /tmp/spinnaker/pipeline-decrypted/
+      kubectl apply -f /tmp/spinnaker/pipeline-promotion/pipe-promot-config-cm.yaml -n ${SPINNAKER_NAMESPACE}
+      kubectl apply -f /tmp/spinnaker/pipeline-decrypted/ -n ${SPINNAKER_NAMESPACE}
+     fi
+    fi

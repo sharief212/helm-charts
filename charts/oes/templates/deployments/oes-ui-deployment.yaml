@@ -1,0 +1,92 @@
+{{- if or (eq .Values.installationMode "OES-AP")  (eq .Values.installationMode "EASY") -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: oes
+    component: ui
+{{ include "oes.standard-labels" . | indent 4 }}
+  name: oes-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oes
+      component: ui
+  template:
+    metadata:
+      annotations:
+        configmap/checksum: {{ (.Files.Glob "config/oes-ui/app-config.json").AsConfig | sha256sum }}
+      labels:
+        app: oes
+        component: ui
+{{ include "oes.standard-labels" . | indent 8 }}
+    spec:
+      {{- if .Values.global.autoConfiguration.enabled }}
+      initContainers:
+      - env:
+        - name: EXTERNAL_IP_CHECK_DELAY
+          value: "{{ .Values.global.autoConfiguration.initContainer.externalIpCheckDelay}}"
+        image: {{ .Values.global.autoConfiguration.initContainer.image}}
+        imagePullPolicy: {{ .Values.global.autoConfiguration.initContainer.pullPolicy}}
+        name: ui-autoconfig
+        command: ["/home/config_endpoint.sh"]
+        args: ["oes-ui"]
+        volumeMounts:
+        - mountPath: /config/app-config.json
+          name: config-temp
+          subPath: app-config.json
+        - mountPath: /var/www/html/assets/config
+          name: config-dir
+      {{- end }}
+      containers:
+      - image: {{ template "ui.image" . }}
+        name: oes-ui
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        volumeMounts:
+        - name: config-dir
+          mountPath: /var/www/html/assets/config/app-config.json
+          subPath: app-config.json
+        - mountPath: /etc/nginx/nginx.conf
+          name: nginx-config
+          subPath: nginx.conf
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 5
+      {{- if .Values.imagePullSecret}}
+      imagePullSecrets:
+      - name: {{ .Values.imagePullSecret}}
+      {{- end }}
+      {{- if .Values.ui.nodeSelector }}
+      nodeSelector:
+{{ toYaml .Values.ui.nodeSelector | indent 8 }}
+      {{- end }}
+      volumes:
+      {{- if .Values.global.autoConfiguration.enabled }}
+      - configMap:
+          defaultMode: 420
+          name: oes-ui-config
+        name: config-temp
+      - emptyDir: {}
+        name: config-dir
+      {{- else }}
+      - configMap:
+          defaultMode: 420
+          name: oes-ui-config
+        name: config-dir
+      {{- end }}
+      - configMap:
+          defaultMode: 420
+          name: oes-ui-nginxconf
+        name: nginx-config
+{{- end -}}
